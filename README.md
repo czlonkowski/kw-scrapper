@@ -146,9 +146,9 @@ The API will be available at http://localhost:8000.
   - Request body:
     ```json
     {
-      "kod_wydzialu": "WA1M",
-      "numer_ksiegi_wieczystej": "00533284",
-      "cyfra_kontrolna": "3"
+      "kod_wydzialu": "PO1G",
+      "numer_ksiegi_wieczystej": "00012345",
+      "cyfra_kontrolna": "5"
     }
     ```
   - Query parameters:
