@@ -2,10 +2,7 @@ version: '3.8'
 
 services:
   ekw-scraper:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ghcr.io/czlonkowski/kw-scrapper:latest
+    image: ghcr.io/czlonkowski/kw-scrapper:main
     container_name: ekw-scraper
     restart: unless-stopped
     ports:
