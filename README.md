@@ -120,13 +120,13 @@ The API will be available at http://localhost:8000/docs
 The CLI tool allows you to quickly test the scraper with a specific KW number:
 
 ```bash
-python cli.py --kod WA1M --numer 00533284 --cyfra 3 --output result.json
+python cli.py --kod PO1G --numer 00012346 --cyfra 5 --output result.json
 ```
 
 Parameters:
-- `--kod`: Department code (e.g., WA1M)
-- `--numer`: Land register number (e.g., 00533284)
-- `--cyfra`: Check digit (e.g., 3)
+- `--kod`: Department code (e.g., PO1G)
+- `--numer`: Land register number (e.g., 00012346)
+- `--cyfra`: Check digit (e.g., 5)
 - `--output`: Optional output file path to save results
 
 ### API Server
@@ -147,7 +147,7 @@ The API will be available at http://localhost:8000.
     ```json
     {
       "kod_wydzialu": "PO1G",
-      "numer_ksiegi_wieczystej": "00012345",
+      "numer_ksiegi_wieczystej": "00012346",
       "cyfra_kontrolna": "5"
     }
     ```
@@ -195,7 +195,7 @@ The scraper returns structured data for each section of the KW document:
 {
   "success": true,
   "error": null,
-  "kw_number": "WA1M/00533284/3",
+  "kw_number": "PO1G/00012346/5",
   "dzial_io": {
     "content": {
       "title": "DZIAŁ I-O - OZNACZENIE NIERUCHOMOŚCI",

@@ -1,0 +1,44 @@
+FROM ghcr.io/czlonkowski/kw-scrapper:main
+
+USER root
+
+# Ensure the ms-playwright directory exists and has correct permissions
+RUN mkdir -p /home/appuser/.cache/ms-playwright && \
+    chown -R appuser:appuser /home/appuser/.cache
+
+# Install Playwright browsers with system dependencies
+RUN apt-get update && apt-get install -y \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxi6 \
+    libxtst6 \
+    libnss3 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libxshmfence1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Switch to appuser for the actual browser installation
+USER appuser
+
+# Set environment variables to ensure Playwright installs to the correct location
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/appuser/.cache/ms-playwright
+
+# Install Playwright browsers (only chromium for smaller image)
+RUN python -m playwright install chromium
+
+# The original CMD from the base image is preserved

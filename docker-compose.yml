@@ -13,12 +13,13 @@ services:
       - LOG_LEVEL=INFO
     volumes:
       - ./logs:/app/logs
+      - playwright-cache:/home/appuser/.cache/ms-playwright
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/scraper/health"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+      timeout: 30s
+      retries: 5
+      start_period: 120s
 
   # Optional Redis cache for production use
   # redis:
@@ -31,6 +32,6 @@ services:
   #     - redis-data:/data
   #   command: redis-server --appendonly yes
 
-# Uncomment for Redis persistence
-# volumes:
-#   redis-data:
+volumes:
+  playwright-cache:
+  # redis-data:  # Uncomment for Redis persistence
