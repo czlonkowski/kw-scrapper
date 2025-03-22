@@ -8,12 +8,20 @@ This guide provides instructions for deploying the EKW Scraper application using
 - Docker and Docker Compose
 - GitHub account with access to GitHub Container Registry (GHCR)
 
+## Multi-Architecture Support
+
+The EKW Scraper Docker image is built for multiple architectures:
+- `linux/amd64` (x86_64) - Standard Intel/AMD processors
+- `linux/arm64` (aarch64) - ARM-based processors like Apple M1/M2, AWS Graviton, and Raspberry Pi 4
+
+This allows you to run the application on various platforms without modification.
+
 ## Local Deployment with Docker Compose
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/ksiega-scrapper.git
-   cd ksiega-scrapper
+   git clone https://github.com/czlonkowski/kw-scrapper.git
+   cd kw-scrapper
    ```
 
 2. Create a `.env` file with your configuration:
@@ -50,7 +58,7 @@ The EKW Scraper includes GitHub Actions workflows to automatically build and pub
 
 1. Pull the image from GitHub Container Registry:
    ```bash
-   docker pull ghcr.io/yourusername/ksiega-scrapper:latest
+   docker pull ghcr.io/czlonkowski/kw-scrapper:latest
    ```
 
 2. Run the container:
@@ -59,7 +67,7 @@ The EKW Scraper includes GitHub Actions workflows to automatically build and pub
      -e ekw_portal_url=https://przegladarka-ekw.ms.gov.pl/eukw_prz/KsiegiWieczyste/wyszukiwanieKW?komunikaty=true&kontakt=true&okienkoSerwisowe=false \
      -e MAX_CONCURRENT=5 \
      -e LOG_LEVEL=INFO \
-     ghcr.io/yourusername/ksiega-scrapper:latest
+     ghcr.io/czlonkowski/kw-scrapper:latest
    ```
 
 ## Production Deployment Considerations
@@ -97,7 +105,7 @@ spec:
     spec:
       containers:
       - name: ekw-scraper
-        image: ghcr.io/yourusername/ksiega-scrapper:latest
+        image: ghcr.io/czlonkowski/kw-scrapper:latest
         ports:
         - containerPort: 8000
         env:
@@ -137,4 +145,3 @@ spec:
 Apply this manifest with:
 ```bash
 kubectl apply -f kubernetes-deployment.yaml
-```

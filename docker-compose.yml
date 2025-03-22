@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ekw-scraper:latest
+    image: ghcr.io/czlonkowski/kw-scrapper:latest
     container_name: ekw-scraper
     restart: unless-stopped
     ports:

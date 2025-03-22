@@ -23,8 +23,8 @@ A modern, asynchronous FastAPI application for scraping the Electronic Land and 
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/ksiega-scrapper.git
-cd ksiega-scrapper
+git clone https://github.com/czlonkowski/kw-scrapper.git
+cd kw-scrapper
 ```
 
 2. Create a virtual environment:
@@ -52,6 +52,66 @@ playwright install chromium
 ekw_portal_url=https://przegladarka-ekw.ms.gov.pl/eukw_prz/KsiegiWieczyste/wyszukiwanieKW?komunikaty=true&kontakt=true&okienkoSerwisowe=false
 MAX_CONCURRENT=5
 ```
+
+### Docker Setup
+
+You can also run the application using Docker:
+
+1. Using pre-built image from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/czlonkowski/kw-scrapper:latest
+```
+
+> **Note:** The Docker image supports both AMD64 (x86_64) and ARM64 architectures, so it can run on various platforms including Apple M1/M2 Macs, AWS Graviton instances, and Raspberry Pi devices.
+
+```bash
+docker run -d -p 8000:8000 \
+  -e ekw_portal_url=https://przegladarka-ekw.ms.gov.pl/eukw_prz/KsiegiWieczyste/wyszukiwanieKW?komunikaty=true&kontakt=true&okienkoSerwisowe=false \
+  -e MAX_CONCURRENT=5 \
+  ghcr.io/czlonkowski/kw-scrapper:latest
+```
+
+2. Using Docker Compose:
+
+Create a `docker-compose.yml` file:
+
+```yaml
+version: '3.8'
+
+services:
+  ekw-scraper:
+    image: ghcr.io/czlonkowski/kw-scrapper:latest
+    container_name: ekw-scraper
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ekw_portal_url=https://przegladarka-ekw.ms.gov.pl/eukw_prz/KsiegiWieczyste/wyszukiwanieKW?komunikaty=true&kontakt=true&okienkoSerwisowe=false
+      - MAX_CONCURRENT=5
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./logs:/app/logs
+```
+
+Then run:
+
+```bash
+docker-compose up -d
+```
+
+3. Building the image locally:
+
+```bash
+# Clone the repository
+git clone https://github.com/czlonkowski/kw-scrapper.git
+cd kw-scrapper
+
+# Build and run with Docker Compose
+docker-compose -f docker-compose.yml up -d --build
+```
+
+The API will be available at http://localhost:8000/docs
 
 ## Usage
 
@@ -107,7 +167,7 @@ When the server is running, you can access the interactive API documentation:
 ## Project Structure
 
 ```
-ksiega-scrapper/
+kw-scrapper/
 ├── app/
 │   ├── api/
 │   │   └── routes/
