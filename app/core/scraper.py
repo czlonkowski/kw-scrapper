@@ -306,11 +306,6 @@ async def process_section(page: Page, section_name: str, section_selector: str) 
         # Extract HTML content
         html_content = await extract_html_content(page, "#contentDzialu")
         
-        # Save HTML for debugging (especially for Dział II)
-        if section_name == "dzial_ii":
-            with open(f"files/live_{section_name}_debug.html", "w") as f:
-                f.write(html_content)
-        
         # Parse section data
         parse_function = globals()[f"parse_{section_name}"]
         section_data = await parse_function(page, html_content)
@@ -430,10 +425,6 @@ async def parse_dzial_ii(page: Page, html_content: str) -> DzialII:
     """
     content = {"title": "DZIAŁ II - WŁASNOŚĆ", "tables": []}
     
-    # Save raw HTML to a file for debugging
-    with open("files/dzial_ii_debug.html", "w") as f:
-        f.write(html_content)
-    
     # Use BeautifulSoup for direct HTML parsing
     soup = BeautifulSoup(html_content, 'html.parser')
     
@@ -526,10 +517,6 @@ async def parse_dzial_ii(page: Page, html_content: str) -> DzialII:
     basis_docs = await extract_document_basis(page)
     if basis_docs:
         content["document_basis"] = basis_docs
-    
-    # Save the raw HTML for debugging
-    with open("files/live_dzial_ii_debug.html", "w") as f:
-        f.write(html_content)
     
     return DzialII(content=content, raw_html=None)
 
