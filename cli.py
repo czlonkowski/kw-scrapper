@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def run_scraper(kod_wydzialu: str, numer_ksiegi_wieczystej: str, cyfra_kontrolna: str) -> Dict[str, Any]:
+async def run_scraper(kod_wydzialu: str, numer_ksiegi_wieczystej: str, cyfra_kontrolna: str, save_screenshots: bool = False) -> Dict[str, Any]:
     """
     Run the scraper with the given KW number.
     
@@ -26,6 +26,7 @@ async def run_scraper(kod_wydzialu: str, numer_ksiegi_wieczystej: str, cyfra_kon
         kod_wydzialu: Code of the department
         numer_ksiegi_wieczystej: Number of the land register
         cyfra_kontrolna: Check digit
+        save_screenshots: Whether to save screenshots for debugging
         
     Returns:
         Dict[str, Any]: Scraped data or error information
@@ -36,7 +37,7 @@ async def run_scraper(kod_wydzialu: str, numer_ksiegi_wieczystej: str, cyfra_kon
         cyfra_kontrolna=cyfra_kontrolna
     )
     
-    result = await scrape_ekw(request)
+    result = await scrape_ekw(request, save_screenshots=save_screenshots)
     return result.model_dump()
 
 
@@ -47,12 +48,13 @@ def main():
     parser.add_argument("--numer", required=True, help="Numer księgi wieczystej (e.g., 00533284)")
     parser.add_argument("--cyfra", required=True, help="Cyfra kontrolna (e.g., 3)")
     parser.add_argument("--output", help="Output file path (optional)")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode with screenshots")
     
     args = parser.parse_args()
     
     logger.info(f"Starting scraper for KW: {args.kod}/{args.numer}/{args.cyfra}")
     
-    result = asyncio.run(run_scraper(args.kod, args.numer, args.cyfra))
+    result = asyncio.run(run_scraper(args.kod, args.numer, args.cyfra, save_screenshots=args.debug))
     
     # Pretty print result
     result_json = json.dumps(result, indent=2, ensure_ascii=False)
