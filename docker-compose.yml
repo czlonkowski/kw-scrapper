@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  ekw-scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ekw-scraper:latest
+    container_name: ekw-scraper
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ekw_portal_url=https://przegladarka-ekw.ms.gov.pl/eukw_prz/KsiegiWieczyste/wyszukiwanieKW?komunikaty=true&kontakt=true&okienkoSerwisowe=false
+      - MAX_CONCURRENT=5
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/scraper/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Optional Redis cache for production use
+  # redis:
+  #   image: redis:alpine
+  #   container_name: ekw-scraper-redis
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis-data:/data
+  #   command: redis-server --appendonly yes
+
+# Uncomment for Redis persistence
+# volumes:
+#   redis-data:
