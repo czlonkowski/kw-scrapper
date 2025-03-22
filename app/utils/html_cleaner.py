@@ -300,75 +300,27 @@ def clean_scraped_data(data: Any) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Cleaned and structured data
     """
-    if not data:
-        return {}
-    
     # Convert Pydantic model to dict if needed
     if isinstance(data, BaseModel):
         data_dict = data.model_dump()
     else:
         data_dict = data
     
-    result = {}
+    cleaned_data = {}
     
-    # Clean each section
     for key, value in data_dict.items():
-        if key.startswith("dzial_") and value:
-            result[key] = clean_section_data(value)
+        if key in ["dzial_io", "dzial_isp", "dzial_ii", "dzial_iii", "dzial_iv"]:
+            cleaned_data[key] = clean_section_data(value)
+        elif isinstance(value, dict):
+            cleaned_data[key] = clean_scraped_data(value)
+        elif isinstance(value, list):
+            if all(isinstance(item, dict) for item in value):
+                cleaned_data[key] = [clean_scraped_data(item) for item in value]
+            else:
+                cleaned_data[key] = value
+        elif isinstance(value, BaseModel):
+            cleaned_data[key] = clean_scraped_data(value)
         else:
-            result[key] = value
+            cleaned_data[key] = value
     
-    return result
-
-
-def clean_html_content(html_content: str) -> str:
-    """
-    Clean HTML content by removing unnecessary elements and normalizing structure.
-    
-    Args:
-        html_content: Raw HTML content
-        
-    Returns:
-        str: Cleaned HTML content
-    """
-    if not html_content:
-        return ""
-    
-    try:
-        # Parse HTML
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # Remove script and style elements
-        for element in soup(['script', 'style', 'meta', 'link', 'iframe']):
-            element.decompose()
-            
-        # Remove comments
-        for comment in soup.find_all(string=lambda text: isinstance(text, str) and text.strip().startswith('<!--')):
-            comment.extract()
-            
-        # Remove hidden elements
-        for element in soup.find_all(style=lambda value: value and 'display:none' in value):
-            element.decompose()
-            
-        # Remove empty elements
-        for element in soup.find_all():
-            if len(element.get_text(strip=True)) == 0 and not element.find_all(['img']):
-                if element.name not in ['br', 'hr', 'img', 'input', 'meta']:
-                    element.decompose()
-        
-        # Normalize whitespace in text nodes
-        for text in soup.find_all(text=True):
-            if text.parent.name not in ['style', 'script', 'pre', 'code']:
-                text.replace_with(re.sub(r'\s+', ' ', text.strip()))
-        
-        # Get the cleaned HTML
-        cleaned_html = str(soup)
-        
-        # Remove excessive newlines
-        cleaned_html = re.sub(r'\n{3,}', '\n\n', cleaned_html)
-        
-        return cleaned_html
-    
-    except Exception as e:
-        # If parsing fails, return the original HTML with minimal cleaning
-        return re.sub(r'\s+', ' ', html_content).strip()
+    return cleaned_data

@@ -3,7 +3,6 @@ Core scraping functionality for EKW portal.
 """
 import asyncio
 import logging
-import json
 from typing import Dict, List, Optional, Any, Tuple
 from playwright.async_api import Page, Browser
 
@@ -20,7 +19,7 @@ from app.utils.browser import (
     extract_html_content,
     accept_cookies
 )
-from app.utils.html_cleaner import clean_scraped_data, clean_html_content, parse_ekw_section
+from app.utils.html_cleaner import clean_scraped_data
 from app.models.request import KWRequest
 from app.models.response import (
     ScraperResponse,
@@ -38,473 +37,707 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-async def scrape_ekw(request: KWRequest, clean_html: bool = True, save_screenshots: bool = False) -> ScraperResponse:
+async def scrape_ekw(request: KWRequest, clean_html: bool = True) -> ScraperResponse:
     """
-    Scrape EKW portal for the given KW number.
+    Main function to scrape EKW portal.
     
     Args:
-        request: KW request with kod_wydzialu, numer_ksiegi_wieczystej, and cyfra_kontrolna
-        clean_html: Whether to clean HTML from scraped data
-        save_screenshots: Whether to save screenshots for debugging purposes
+        request: KWRequest object containing KW number details
+        clean_html: Whether to clean HTML from the response data
         
     Returns:
-        ScraperResponse with scraped data
+        ScraperResponse: Scraped data or error information
     """
     playwright = None
     browser = None
-    page = None
     
     try:
-        # Format KW number
-        kw_number = f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
-        logger.info(f"Starting EKW scraping for: {kw_number}")
-        
-        # Initialize browser
+        # Initialize browser with shorter timeout
         playwright, browser, page = await initialize_browser()
-        if not browser:
-            return ScraperResponse(
-                success=False,
-                error="Failed to initialize browser",
-                kw_number=kw_number
-            )
-        
         logger.info("Browser initialized successfully")
         
-        # Navigate to EKW portal
-        await page.goto(settings.ekw_portal_url, wait_until="networkidle")
-        logger.info(f"Navigated to EKW portal: {settings.ekw_portal_url}")
+        # Set default timeout for all operations
+        page.set_default_timeout(15000)  # 15 seconds timeout
         
-        # Accept cookies if present
+        # Navigate to EKW portal
         try:
-            cookie_button = page.locator('button:has-text("Akceptuję")')
-            if await cookie_button.count() > 0:
-                await cookie_button.click()
-                await page.wait_for_load_state("networkidle")
+            await navigate_to_url(page, settings.ekw_portal_url)
+            logger.info(f"Navigated to EKW portal: {settings.ekw_portal_url}")
+        except Exception as e:
+            logger.error(f"Error navigating to EKW portal: {str(e)}")
+            return ScraperResponse(
+                success=False,
+                error=f"Error navigating to EKW portal: {str(e)}",
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+            )
+        
+        # Accept cookies if present (with shorter timeout)
+        try:
+            await accept_cookies(page)
             logger.info("Attempted to accept cookies if present")
         except Exception as e:
-            logger.warning(f"Error accepting cookies: {str(e)}")
+            logger.warning(f"Cookie acceptance failed, but continuing: {str(e)}")
         
-        # Save screenshot for debugging
-        if save_screenshots:
-            try:
-                await page.screenshot(path=f"debug_initial_page_{request.kod_wydzialu}_{request.numer_ksiegi_wieczystej}_{request.cyfra_kontrolna}.png")
-                logger.info("Saved initial page screenshot for debugging")
-            except Exception as e:
-                logger.warning(f"Failed to save initial page screenshot: {str(e)}")
+        # Take a screenshot for debugging
+        try:
+            await page.screenshot(path="debug_initial_page.png")
+            logger.info("Saved initial page screenshot for debugging")
+        except Exception as e:
+            logger.warning(f"Failed to save initial page screenshot: {str(e)}")
         
-        # Fill KW form
-        await page.fill('#kodWydzialuInput', request.kod_wydzialu)
-        await page.fill('#numerKsiegiWieczystej', request.numer_ksiegi_wieczystej.lstrip('0'))  # Remove leading zeros
-        await page.fill('#cyfraKontrolna', request.cyfra_kontrolna)
-        logger.info(f"Filled KW form with: {kw_number}")
+        # Fill in the KW number fields
+        try:
+            await fill_kw_form(page, request)
+            logger.info(f"Filled KW form with: {request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}")
+        except Exception as e:
+            logger.error(f"Error filling KW form: {str(e)}")
+            return ScraperResponse(
+                success=False,
+                error=f"Error filling KW form: {str(e)}",
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+            )
         
         # Click search button
-        await page.click('#wyszukaj')
-        await page.wait_for_load_state("networkidle")
+        search_success = await click_element(page, "#wyszukaj")
+        if not search_success:
+            logger.error("Failed to click search button")
+            return ScraperResponse(
+                success=False,
+                error="Failed to click search button",
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+            )
         logger.info("Clicked search button")
         
-        # Check if search was successful (with timeout protection)
+        # Wait for results page with reduced timeout
         try:
-            komunikat_exists = await page.locator('.komunikat').count() > 0
-            if komunikat_exists:
-                error_msg = await page.locator('.komunikat').text_content(timeout=5000)
-                if error_msg and "nie została odnaleziona" in error_msg:
-                    return ScraperResponse(
-                        success=False,
-                        error=f"KW not found: {error_msg}",
-                        kw_number=kw_number
-                    )
+            await wait_for_element(page, "#przyciskWydrukZwykly", timeout=15000)
+            logger.info("Search results loaded successfully")
+            
+            # Take a screenshot of the results page
+            await page.screenshot(path="debug_results_page.png")
+            logger.info("Saved results page screenshot for debugging")
         except Exception as e:
-            # If we can't check for error message, just log and continue
-            logger.warning(f"Error checking for komunikat: {str(e)}")
-        
-        logger.info("Search results loaded successfully")
-        
-        # Save screenshot for debugging
-        if save_screenshots:
-            try:
-                await page.screenshot(path=f"debug_results_page_{request.kod_wydzialu}_{request.numer_ksiegi_wieczystej}_{request.cyfra_kontrolna}.png")
-                logger.info("Saved results page screenshot for debugging")
-            except Exception as e:
-                logger.warning(f"Failed to save results page screenshot: {str(e)}")
+            # Take a screenshot of the error page
+            await page.screenshot(path="debug_error_page.png")
+            logger.info("Saved error page screenshot for debugging")
+            
+            # Check if there's an error message
+            error_msg = await get_error_message(page)
+            if error_msg:
+                logger.error(f"Error during search: {error_msg}")
+                return ScraperResponse(
+                    success=False,
+                    error=error_msg,
+                    kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+                )
+            else:
+                logger.error(f"Timeout waiting for search results: {str(e)}")
+                return ScraperResponse(
+                    success=False,
+                    error="Timeout waiting for search results",
+                    kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+                )
         
         # Click on "Przeglądanie aktualnej treści KW" button
-        if not await click_element(page, "#przyciskWydrukZwykly"):
+        view_success = await click_element(page, "#przyciskWydrukZwykly")
+        if not view_success:
+            logger.error("Failed to click on 'Przeglądanie aktualnej treści KW' button")
             return ScraperResponse(
                 success=False,
                 error="Failed to click on 'Przeglądanie aktualnej treści KW' button",
-                kw_number=kw_number
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
             )
-        
         logger.info("Clicked on 'Przeglądanie aktualnej treści KW' button")
         
-        # Save screenshot for debugging
-        if save_screenshots:
+        # Process each section
+        try:
+            sections_data = await process_all_sections(page)
+        except Exception as e:
+            logger.error(f"Error processing sections: {str(e)}")
+            return ScraperResponse(
+                success=False,
+                error=f"Error processing sections: {str(e)}",
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+            )
+        
+        # Clean HTML if requested
+        if clean_html:
             try:
-                await page.screenshot(path=f"debug_content_page_{request.kod_wydzialu}_{request.numer_ksiegi_wieczystej}_{request.cyfra_kontrolna}.png")
-                logger.info("Saved content page screenshot for debugging")
+                sections_data = clean_scraped_data(sections_data)
+                logger.info("Cleaned HTML from scraped data")
             except Exception as e:
-                logger.warning(f"Failed to save content page screenshot: {str(e)}")
+                logger.warning(f"Failed to clean HTML: {str(e)}")
         
-        # Check for frames
-        frames = page.frames
-        main_frame = page
-        
-        # Check if we have frames and find the main content frame
-        if len(frames) > 1:
-            logger.info(f"Found {len(frames)} frames on the page")
-            for frame in frames:
-                frame_name = frame.name
-                frame_url = frame.url
-                logger.info(f"Frame: {frame_name}, URL: {frame_url}")
-                
-                # Look for the content frame - it might be named 'ramka' or contain specific content
-                if frame_name == 'ramka' or 'pokazTresc' in frame_url or 'pokazWydruk' in frame_url:
-                    logger.info(f"Using frame: {frame_name} as main content frame")
-                    main_frame = frame
-                    break
-        
-        # Analyze the page structure to find the department buttons
-        department_selectors = await main_frame.evaluate("""() => {
-            // Look for different types of department buttons/links
-            const selectors = {
-                buttons: [],
-                links: [],
-                inputs: [],
-                images: []
-            };
-            
-            // Check for input buttons
-            document.querySelectorAll('input[type="submit"], input[type="button"], button').forEach(el => {
-                const value = el.value || el.textContent || '';
-                const id = el.id || '';
-                const classes = el.className || '';
-                
-                if (value.includes('Dział') || id.includes('dzial') || classes.includes('dzial')) {
-                    selectors.buttons.push({
-                        selector: el.tagName.toLowerCase() + (id ? `#${id}` : '') + (classes ? `.${classes.replace(/\\s+/g, '.')}` : ''),
-                        type: el.tagName.toLowerCase(),
-                        id: id,
-                        value: value,
-                        department: value.includes('I-O') ? 'io' : 
-                                   value.includes('I-Sp') ? 'isp' : 
-                                   value.includes('II') ? 'ii' : 
-                                   value.includes('III') ? 'iii' : 
-                                   value.includes('IV') ? 'iv' : null
-                    });
-                }
-            });
-            
-            // Check for links
-            document.querySelectorAll('a').forEach(el => {
-                const text = el.textContent || '';
-                const href = el.href || '';
-                const id = el.id || '';
-                const classes = el.className || '';
-                
-                if (text.includes('Dział') || href.includes('dzial') || id.includes('dzial') || classes.includes('dzial')) {
-                    selectors.links.push({
-                        selector: `a${id ? `#${id}` : ''}${classes ? `.${classes.replace(/\\s+/g, '.')}` : ''}`,
-                        type: 'a',
-                        id: id,
-                        text: text,
-                        href: href,
-                        department: text.includes('I-O') ? 'io' : 
-                                   text.includes('I-Sp') ? 'isp' : 
-                                   text.includes('II') ? 'ii' : 
-                                   text.includes('III') ? 'iii' : 
-                                   text.includes('IV') ? 'iv' : null
-                    });
-                }
-            });
-            
-            // Check for images that might be clickable department indicators
-            document.querySelectorAll('img').forEach(el => {
-                const alt = el.alt || '';
-                const src = el.src || '';
-                const id = el.id || '';
-                
-                if (alt.includes('Dział') || src.includes('dzial') || id.includes('dzial')) {
-                    selectors.images.push({
-                        selector: `img${id ? `#${id}` : ''}`,
-                        type: 'img',
-                        id: id,
-                        alt: alt,
-                        src: src,
-                        department: alt.includes('I-O') ? 'io' : 
-                                   alt.includes('I-Sp') ? 'isp' : 
-                                   alt.includes('II') ? 'ii' : 
-                                   alt.includes('III') ? 'iii' : 
-                                   alt.includes('IV') ? 'iv' : null
-                    });
-                }
-            });
-            
-            // Also check for any elements with text containing department names
-            document.querySelectorAll('*').forEach(el => {
-                const text = el.textContent || '';
-                
-                if (text.match(/Dział (I-O|I-Sp|II|III|IV)/) && 
-                    !selectors.buttons.some(b => b.selector === el.tagName.toLowerCase()) && 
-                    !selectors.links.some(l => l.selector === 'a') &&
-                    !selectors.images.some(i => i.selector === 'img')) {
-                    
-                    selectors.inputs.push({
-                        selector: el.tagName.toLowerCase(),
-                        type: el.tagName.toLowerCase(),
-                        text: text,
-                        department: text.includes('I-O') ? 'io' : 
-                                   text.includes('I-Sp') ? 'isp' : 
-                                   text.includes('II') ? 'ii' : 
-                                   text.includes('III') ? 'iii' : 
-                                   text.includes('IV') ? 'iv' : null
-                    });
-                }
-            });
-            
-            return selectors;
-        }""")
-        
-        logger.info(f"Found department selectors: {json.dumps(department_selectors, indent=2)}")
-        
-        # Initialize response data
-        dzial_io = None
-        dzial_isp = None
-        dzial_ii = None
-        dzial_iii = None
-        dzial_iv = None
-        
-        # Function to extract department content
-        async def extract_department_content(frame, department_name):
-            try:
-                # Take a screenshot of the department content
-                if save_screenshots:
-                    try:
-                        await page.screenshot(path=f"debug_{department_name}_content_{request.kod_wydzialu}_{request.numer_ksiegi_wieczystej}_{request.cyfra_kontrolna}.png")
-                    except Exception:
-                        pass
-                
-                # Extract the HTML content
-                content_html = await frame.evaluate("""() => {
-                    // Try to find the main content container
-                    const contentContainers = [
-                        document.querySelector('.tresc'),
-                        document.querySelector('table.tresc'),
-                        document.querySelector('div.content'),
-                        document.querySelector('div[id*="content"]'),
-                        document.querySelector('div[class*="content"]'),
-                        document.querySelector('div[id*="tresc"]'),
-                        document.querySelector('div[class*="tresc"]'),
-                        // If none of the above, get the body content
-                        document.body
-                    ];
-                    
-                    // Use the first non-null container
-                    const container = contentContainers.find(c => c !== null);
-                    return container ? container.outerHTML : document.body.outerHTML;
-                }""")
-                
-                return content_html
-            except Exception as e:
-                logger.error(f"Error extracting {department_name} content: {str(e)}")
-                return None
-        
-        # Try to click each department button and extract content
-        # First, try using the detected selectors
-        departments_to_scrape = [
-            ('io', 'dzial_io'),
-            ('isp', 'dzial_isp'),
-            ('ii', 'dzial_ii'),
-            ('iii', 'dzial_iii'),
-            ('iv', 'dzial_iv')
-        ]
-        
-        for dept_code, dept_var in departments_to_scrape:
-            # Try each type of selector (buttons, links, etc.)
-            clicked = False
-            
-            # First try buttons
-            for button in department_selectors.get('buttons', []):
-                if button.get('department') == dept_code and button.get('selector'):
-                    logger.info(f"Trying to click {dept_var} button with selector: {button['selector']}")
-                    try:
-                        await main_frame.click(button['selector'])
-                        await page.wait_for_load_state("networkidle", timeout=5000)
-                        logger.info(f"Clicked {dept_var} button")
-                        clicked = True
-                        break
-                    except Exception as e:
-                        logger.warning(f"Failed to click {dept_var} button with selector {button['selector']}: {str(e)}")
-            
-            # If button click failed, try links
-            if not clicked:
-                for link in department_selectors.get('links', []):
-                    if link.get('department') == dept_code and link.get('selector'):
-                        logger.info(f"Trying to click {dept_var} link with selector: {link['selector']}")
-                        try:
-                            await main_frame.click(link['selector'])
-                            await page.wait_for_load_state("networkidle", timeout=5000)
-                            logger.info(f"Clicked {dept_var} link")
-                            clicked = True
-                            break
-                        except Exception as e:
-                            logger.warning(f"Failed to click {dept_var} link with selector {link['selector']}: {str(e)}")
-            
-            # If link click failed, try images
-            if not clicked:
-                for img in department_selectors.get('images', []):
-                    if img.get('department') == dept_code and img.get('selector'):
-                        logger.info(f"Trying to click {dept_var} image with selector: {img['selector']}")
-                        try:
-                            await main_frame.click(img['selector'])
-                            await page.wait_for_load_state("networkidle", timeout=5000)
-                            logger.info(f"Clicked {dept_var} image")
-                            clicked = True
-                            break
-                        except Exception as e:
-                            logger.warning(f"Failed to click {dept_var} image with selector {img['selector']}: {str(e)}")
-            
-            # If all else failed, try JavaScript to find and click elements with department text
-            if not clicked:
-                logger.info(f"Trying JavaScript approach to click {dept_var}")
-                try:
-                    dept_name_map = {
-                        'io': 'I-O',
-                        'isp': 'I-Sp',
-                        'ii': 'II',
-                        'iii': 'III',
-                        'iv': 'IV'
-                    }
-                    
-                    dept_name = dept_name_map.get(dept_code, '')
-                    
-                    clicked_js = await main_frame.evaluate(f"""(deptName) => {{
-                        // Try to find elements with the department name
-                        const elements = Array.from(document.querySelectorAll('*'));
-                        
-                        for (const el of elements) {{
-                            const text = el.textContent || el.value || el.alt || '';
-                            const isClickable = el.tagName === 'A' || 
-                                              el.tagName === 'BUTTON' || 
-                                              el.tagName === 'INPUT' || 
-                                              el.onclick || 
-                                              el.role === 'button';
-                            
-                            if (text.includes(deptName) && isClickable) {{
-                                console.log('Found clickable element for ' + deptName + ':', el);
-                                el.click();
-                                return true;
-                            }}
-                        }}
-                        
-                        return false;
-                    }}""", dept_name)
-                    
-                    if clicked_js:
-                        await page.wait_for_load_state("networkidle", timeout=5000)
-                        logger.info(f"Clicked {dept_var} via JavaScript")
-                        clicked = True
-                except Exception as e:
-                    logger.warning(f"JavaScript click for {dept_var} failed: {str(e)}")
-            
-            # Extract content if we successfully clicked
-            if clicked:
-                content = await extract_department_content(main_frame, dept_var)
-                
-                # Clean HTML if requested
-                if clean_html and content:
-                    cleaned_content = clean_html_content(content)
-                    
-                    # Create the appropriate department model instance with both raw and cleaned content
-                    if dept_var == 'dzial_io':
-                        dzial_io = DzialIO(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
-                    elif dept_var == 'dzial_isp':
-                        dzial_isp = DzialISp(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
-                    elif dept_var == 'dzial_ii':
-                        dzial_ii = DzialII(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
-                    elif dept_var == 'dzial_iii':
-                        dzial_iii = DzialIII(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
-                    elif dept_var == 'dzial_iv':
-                        dzial_iv = DzialIV(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
-                else:
-                    # If not cleaning, just store the raw HTML
-                    if dept_var == 'dzial_io':
-                        dzial_io = DzialIO(content={"title": "DZIAŁ I-O"}, raw_html=content)
-                    elif dept_var == 'dzial_isp':
-                        dzial_isp = DzialISp(content={"title": "DZIAŁ I-SP"}, raw_html=content)
-                    elif dept_var == 'dzial_ii':
-                        dzial_ii = DzialII(content={"title": "DZIAŁ II"}, raw_html=content)
-                    elif dept_var == 'dzial_iii':
-                        dzial_iii = DzialIII(content={"title": "DZIAŁ III"}, raw_html=content)
-                    elif dept_var == 'dzial_iv':
-                        dzial_iv = DzialIV(content={"title": "DZIAŁ IV"}, raw_html=content)
-            else:
-                logger.error(f"Failed to click on {dept_var} button")
-        
-        # If we couldn't click any department buttons, try to extract all content at once
-        if not any([dzial_io, dzial_isp, dzial_ii, dzial_iii, dzial_iv]):
-            logger.info("Attempting to extract all content at once")
-            try:
-                full_content = await main_frame.evaluate("""() => {
-                    return document.body.outerHTML;
-                }""")
-                
-                if clean_html:
-                    cleaned_content = clean_html_content(full_content)
-                    
-                    # Create proper model instances for each department with parsed content
-                    dzial_io = DzialIO(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
-                    dzial_isp = DzialISp(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
-                    dzial_ii = DzialII(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
-                    dzial_iii = DzialIII(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
-                    dzial_iv = DzialIV(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
-                else:
-                    # If not cleaning, just store the raw HTML
-                    dzial_io = DzialIO(content={"title": "DZIAŁ I-O"}, raw_html=full_content)
-                    dzial_isp = DzialISp(content={"title": "DZIAŁ I-SP"}, raw_html=full_content)
-                    dzial_ii = DzialII(content={"title": "DZIAŁ II"}, raw_html=full_content)
-                    dzial_iii = DzialIII(content={"title": "DZIAŁ III"}, raw_html=full_content)
-                    dzial_iv = DzialIV(content={"title": "DZIAŁ IV"}, raw_html=full_content)
-            except Exception as e:
-                logger.error(f"Error extracting full content: {str(e)}")
-        
-        # Apply final cleaning to the response data if requested
+        # Create response object
         response = ScraperResponse(
             success=True,
-            error=None,
-            kw_number=kw_number,
-            dzial_io=dzial_io,
-            dzial_isp=dzial_isp,
-            dzial_ii=dzial_ii,
-            dzial_iii=dzial_iii,
-            dzial_iv=dzial_iv
+            kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}",
+            **sections_data
         )
         
-        # Apply final data cleaning if requested
-        if clean_html:
-            logger.info("Applying final data cleaning")
-            response = ScraperResponse(**clean_scraped_data(response))
-            
         return response
-    
+        
     except Exception as e:
-        logger.error(f"Error scraping EKW: {str(e)}")
+        logger.error(f"Error during scraping: {str(e)}")
         return ScraperResponse(
             success=False,
-            error=f"Error scraping EKW: {str(e)}",
-            kw_number=request.kod_wydzialu + "/" + request.numer_ksiegi_wieczystej + "/" + request.cyfra_kontrolna if request else "Unknown"
+            error=f"Error during scraping: {str(e)}",
+            kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
         )
-    
     finally:
-        if page:
-            try:
-                await page.close()
-            except Exception:
-                pass
-        
+        # Close browser
         if browser and playwright:
-            try:
-                await close_browser(playwright, browser)
-                logger.info("Browser closed")
-            except Exception:
-                pass
+            await close_browser(playwright, browser)
+            logger.info("Browser closed")
+
+
+async def fill_kw_form(page: Page, request: KWRequest) -> None:
+    """
+    Fill in the KW number form.
+    
+    Args:
+        page: Playwright page object
+        request: KWRequest object containing KW number details
+    """
+    # Fill in the code field
+    await fill_input(page, "#kodWydzialuInput", request.kod_wydzialu)
+    
+    # Fill in the number field
+    await fill_input(page, "#numerKsiegiWieczystej", request.numer_ksiegi_wieczystej)
+    
+    # Fill in the check digit field
+    await fill_input(page, "#cyfraKontrolna", request.cyfra_kontrolna)
+
+
+async def get_error_message(page: Page) -> Optional[str]:
+    """
+    Extract error message from the page if present.
+    
+    Args:
+        page: Playwright page object
+        
+    Returns:
+        Optional[str]: Error message if found, None otherwise
+    """
+    error_selectors = [
+        ".error:not(.hide)",
+        ".error-message",
+        "#errorMessageBox"
+    ]
+    
+    for selector in error_selectors:
+        try:
+            elements = await page.query_selector_all(selector)
+            if elements:
+                messages = []
+                for element in elements:
+                    text = await element.inner_text()
+                    if text and text.strip():
+                        messages.append(text.strip())
+                if messages:
+                    return " | ".join(messages)
+        except Exception:
+            continue
+    
+    return None
+
+
+async def process_all_sections(page: Page) -> Dict[str, Any]:
+    """
+    Process all sections of the KW document.
+    
+    Args:
+        page: Playwright page object
+        
+    Returns:
+        Dict[str, Any]: Dictionary containing data from all sections
+    """
+    sections = {
+        "dzial_io": {"selector": "input[value='Dział I-O']", "parser": parse_dzial_io},
+        "dzial_isp": {"selector": "input[value='Dział I-Sp']", "parser": parse_dzial_isp},
+        "dzial_ii": {"selector": "input[value='Dział II']", "parser": parse_dzial_ii},
+        "dzial_iii": {"selector": "input[value='Dział III']", "parser": parse_dzial_iii},
+        "dzial_iv": {"selector": "input[value='Dział IV']", "parser": parse_dzial_iv}
+    }
+    
+    result = {}
+    
+    for section_name, section_info in sections.items():
+        try:
+            section_data = await process_section(page, section_name, section_info["selector"])
+            if section_data is not None:
+                result[section_name] = section_data
+        except Exception as e:
+            logger.error(f"Error processing {section_name}: {str(e)}")
+            # Create empty section data with error
+            section_class = globals()[section_name.title().replace("_", "")]
+            result[section_name] = section_class(
+                content={"title": f"DZIAŁ {section_name.upper().replace('DZIAL_', '').replace('_', '-')}", "error": f"Failed to process section: {str(e)}"},
+                raw_html=None
+            )
+    
+    return result
+
+
+async def process_section(page: Page, section_name: str, section_selector: str) -> Dict[str, Any]:
+    """
+    Process a specific section of the KW document.
+    
+    Args:
+        page: Playwright page object
+        section_name: Name of the section (e.g., 'dzial_ii')
+        section_selector: CSS selector for the section button
+        
+    Returns:
+        Dict: Parsed section data
+    """
+    try:
+        # Click on section button
+        click_success = await click_element(page, section_selector)
+        if not click_success:
+            logger.error(f"Failed to click on {section_name} button")
+            return None
+        
+        logger.info(f"Clicked on {section_name} button")
+        
+        # Wait for section content to load
+        await wait_for_element(page, "#contentDzialu")
+        
+        # Extract HTML content
+        html_content = await extract_html_content(page, "#contentDzialu")
+        
+        # Save HTML for debugging (especially for Dział II)
+        if section_name == "dzial_ii":
+            with open(f"files/live_{section_name}_debug.html", "w") as f:
+                f.write(html_content)
+        
+        # Parse section data
+        parse_function = globals()[f"parse_{section_name}"]
+        section_data = await parse_function(page, html_content)
+        
+        logger.info(f"Processed {section_name} successfully")
+        return section_data
+    
+    except Exception as e:
+        logger.error(f"Error processing {section_name}: {str(e)}")
+        return None
+
+
+async def parse_dzial_io(page: Page, html_content: str) -> DzialIO:
+    """
+    Parse data from Dział I-O section.
+    
+    Args:
+        page: Playwright page object
+        html_content: HTML content of the section
+        
+    Returns:
+        DzialIO: Parsed data
+    """
+    content = {}
+    
+    # Extract table data
+    tables = await page.query_selector_all("table.tabela-dane")
+    
+    if tables:
+        # Process first table - general information
+        if len(tables) > 0:
+            rows = await tables[0].query_selector_all("tr")
+            for row in rows:
+                cells = await row.query_selector_all("td")
+                if len(cells) >= 2:
+                    key = await cells[0].inner_text()
+                    value = await cells[1].inner_text()
+                    content[key.strip()] = value.strip()
+        
+        # Process second table - location information
+        if len(tables) > 1:
+            location_data = []
+            rows = await tables[1].query_selector_all("tr")
+            headers = []
+            
+            for i, row in enumerate(rows):
+                cells = await row.query_selector_all("td")
+                
+                if i == 0:  # Header row
+                    for cell in cells:
+                        headers.append(await cell.inner_text())
+                else:  # Data rows
+                    row_data = {}
+                    for j, cell in enumerate(cells):
+                        if j < len(headers):
+                            row_data[headers[j].strip()] = (await cell.inner_text()).strip()
+                    if row_data:
+                        location_data.append(row_data)
+            
+            content["location_data"] = location_data
+    
+    return DzialIO(content=content, raw_html=html_content)
+
+
+async def parse_dzial_isp(page: Page, html_content: str) -> DzialISp:
+    """
+    Parse data from Dział I-Sp section.
+    
+    Args:
+        page: Playwright page object
+        html_content: HTML content of the section
+        
+    Returns:
+        DzialISp: Parsed data
+    """
+    content = {}
+    
+    # Extract table data
+    tables = await page.query_selector_all("table.tabela-dane")
+    
+    if tables:
+        property_data = []
+        
+        for table in tables:
+            rows = await table.query_selector_all("tr")
+            headers = []
+            
+            for i, row in enumerate(rows):
+                cells = await row.query_selector_all("td")
+                
+                if i == 0:  # Header row
+                    for cell in cells:
+                        headers.append(await cell.inner_text())
+                else:  # Data rows
+                    row_data = {}
+                    for j, cell in enumerate(cells):
+                        if j < len(headers):
+                            row_data[headers[j].strip()] = (await cell.inner_text()).strip()
+                    if row_data:
+                        property_data.append(row_data)
+        
+        content["property_data"] = property_data
+    
+    return DzialISp(content=content, raw_html=html_content)
+
+
+async def parse_dzial_ii(page: Page, html_content: str) -> DzialII:
+    """
+    Parse data from Dział II section.
+    
+    Args:
+        page: Playwright page object
+        html_content: HTML content of the section
+        
+    Returns:
+        DzialII: Parsed data
+    """
+    content = {"title": "DZIAŁ II - WŁASNOŚĆ", "tables": []}
+    
+    # Save raw HTML to a file for debugging
+    with open("files/dzial_ii_debug.html", "w") as f:
+        f.write(html_content)
+    
+    # Use BeautifulSoup for direct HTML parsing
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Find all owner rows by looking for cells containing PESEL numbers (11 digits)
+    pesel_pattern = re.compile(r'\d{11}')
+    owner_rows = []
+    
+    for td in soup.find_all('td'):
+        if pesel_pattern.search(str(td.text)) and 'CZŁONKOWSK' in td.text:
+            owner_row = td.parent
+            owner_rows.append(owner_row)
+    
+    # Process each owner row to extract owner information
+    for i, row in enumerate(owner_rows):
+        # Extract owner information
+        owner_info = row.find('td', text=lambda t: pesel_pattern.search(str(t)) and 'CZŁONKOWSK' in t)
+        
+        if owner_info:
+            owner_data = {
+                "Lista wskazań udziałów w prawie (numer udziału w prawie/ wielkość udziału/rodzaj wspólności)": str(i + 1),
+                "Osoba fizyczna (Imię pierwsze nazwisko, imię ojca, imię matki, PESEL)": owner_info.text.strip()
+            }
+            
+            # Try to find the Lp number in previous rows
+            lp_row = None
+            current_row = row
+            
+            # Look up to 5 rows back for Lp. X.
+            for _ in range(5):
+                if current_row.previous_sibling:
+                    current_row = current_row.previous_sibling
+                    if isinstance(current_row, Tag):
+                        lp_cell = current_row.find('td', text=re.compile(r'Lp\. \d+\.'))
+                        if lp_cell:
+                            lp_match = re.search(r'Lp\. (\d+)\.', lp_cell.text)
+                            if lp_match:
+                                owner_data["Lp. " + lp_match.group(1) + "."] = lp_match.group(1)
+                                break
+            
+            content["tables"].append(owner_data)
+    
+    # If BeautifulSoup parsing failed, try a JavaScript approach
+    if not content["tables"]:
+        # Use a JavaScript approach to extract owners
+        owners = await page.evaluate("""
+        () => {
+            try {
+                const owners = [];
+                
+                // Find all elements containing PESEL numbers
+                const peselElements = Array.from(document.querySelectorAll('td'))
+                    .filter(td => td.textContent.match(/\\d{11}/) && 
+                                td.textContent.includes('CZŁONKOWSK'));
+                
+                for (let i = 0; i < peselElements.length; i++) {
+                    const peselElement = peselElements[i];
+                    const ownerData = {
+                        "Lista wskazań udziałów w prawie (numer udziału w prawie/ wielkość udziału/rodzaj wspólności)": String(i + 1),
+                        "Osoba fizyczna (Imię pierwsze nazwisko, imię ojca, imię matki, PESEL)": peselElement.textContent.trim()
+                    };
+                    
+                    // Try to find the Lp number
+                    let currentRow = peselElement.closest('tr');
+                    let previousRow = currentRow.previousElementSibling;
+                    
+                    while (previousRow) {
+                        const lpMatch = previousRow.textContent.match(/Lp\\. (\\d+)\\./);
+                        if (lpMatch) {
+                            ownerData["Lp. " + lpMatch[1] + "."] = lpMatch[1];
+                            break;
+                        }
+                        previousRow = previousRow.previousElementSibling;
+                    }
+                    
+                    owners.push(ownerData);
+                }
+                
+                return owners;
+            } catch (error) {
+                console.error("Error extracting owners:", error);
+                return [];
+            }
+        }
+        """)
+        
+        if owners and isinstance(owners, list):
+            content["tables"] = owners
+    
+    # Extract document basis information
+    basis_docs = await extract_document_basis(page)
+    if basis_docs:
+        content["document_basis"] = basis_docs
+    
+    # Save the raw HTML for debugging
+    with open("files/live_dzial_ii_debug.html", "w") as f:
+        f.write(html_content)
+    
+    return DzialII(content=content, raw_html=None)
+
+
+async def parse_dzial_iii(page: Page, html_content: str) -> DzialIII:
+    """
+    Parse data from Dział III section.
+    
+    Args:
+        page: Playwright page object
+        html_content: HTML content of the section
+        
+    Returns:
+        DzialIII: Parsed data
+    """
+    content = {}
+    
+    # Extract table data
+    tables = await page.query_selector_all("table.tabela-dane")
+    
+    if tables:
+        rights_data = []
+        
+        for table in tables:
+            rows = await table.query_selector_all("tr")
+            headers = []
+            
+            for i, row in enumerate(rows):
+                cells = await row.query_selector_all("td")
+                
+                if i == 0:  # Header row
+                    for cell in cells:
+                        headers.append(await cell.inner_text())
+                else:  # Data rows
+                    row_data = {}
+                    for j, cell in enumerate(cells):
+                        if j < len(headers):
+                            row_data[headers[j].strip()] = (await cell.inner_text()).strip()
+                    if row_data:
+                        rights_data.append(row_data)
+        
+        content["rights_data"] = rights_data
+    
+    return DzialIII(content=content, raw_html=html_content)
+
+
+async def parse_dzial_iv(page: Page, html_content: str) -> DzialIV:
+    """
+    Parse data from Dział IV section.
+    
+    Args:
+        page: Playwright page object
+        html_content: HTML content of the section
+        
+    Returns:
+        DzialIV: Parsed data
+    """
+    content = {}
+    
+    # Extract table data
+    tables = await page.query_selector_all("table.tabela-dane")
+    
+    if tables:
+        mortgage_data = []
+        
+        for table in tables:
+            rows = await table.query_selector_all("tr")
+            headers = []
+            
+            for i, row in enumerate(rows):
+                cells = await row.query_selector_all("td")
+                
+                if i == 0:  # Header row
+                    for cell in cells:
+                        headers.append(await cell.inner_text())
+                else:  # Data rows
+                    row_data = {}
+                    for j, cell in enumerate(cells):
+                        if j < len(headers):
+                            row_data[headers[j].strip()] = (await cell.inner_text()).strip()
+                    if row_data:
+                        mortgage_data.append(row_data)
+        
+        content["mortgage_data"] = mortgage_data
+    
+    return DzialIV(content=content, raw_html=html_content)
+
+
+async def extract_document_basis(page: Page) -> List[Dict[str, str]]:
+    """
+    Extract document basis information from a section.
+    
+    Args:
+        page: Playwright page object
+        
+    Returns:
+        List[Dict[str, str]]: Document basis information
+    """
+    basis_docs = []
+    
+    # Find the document basis section
+    basis_tables = await page.query_selector_all("table.tabelaOpisnaPodstawaWpisu")
+    
+    for table in basis_tables:
+        rows = await table.query_selector_all("tr")
+        if len(rows) < 2:
+            continue
+            
+        basis_number = None
+        document_description = None
+        journal_info = None
+        
+        for row in rows:
+            cells = await row.query_selector_all("td")
+            if len(cells) < 2:
+                continue
+                
+            header_cell = cells[0]
+            value_cell = cells[1]
+            
+            header_text = (await header_cell.inner_text()).strip()
+            value_text = (await value_cell.inner_text()).strip()
+            
+            if "Numer podstawy wpisu" in header_text:
+                basis_number = value_text
+            elif document_description is None and basis_number is not None:
+                document_description = value_text
+            elif journal_info is None and document_description is not None:
+                journal_info = value_text
+        
+        if basis_number:
+            basis_docs.append({
+                "basis_number": basis_number,
+                "document_description": document_description if document_description else "",
+                "journal_info": journal_info if journal_info else ""
+            })
+    
+    return basis_docs
+
+
+async def wait_for_element(page: Page, selector: str, timeout: int = 15000) -> bool:
+    """
+    Wait for an element to appear on the page.
+    
+    Args:
+        page: Playwright page object
+        selector: CSS selector for the element
+        timeout: Timeout in milliseconds (default: 15000)
+        
+    Returns:
+        bool: True if element appeared, False if timeout
+    """
+    try:
+        await page.wait_for_selector(selector, timeout=timeout)
+        return True
+    except Exception as e:
+        logger.warning(f"Timeout waiting for element {selector}: {str(e)}")
+        return False
+
+
+async def debug_parse_dzial_ii(html_path: str, browser: Browser) -> Dict[str, Any]:
+    """
+    Debug function to test Dział II parsing with a saved HTML file
+    
+    Args:
+        html_path: Path to the saved HTML file
+        browser: Playwright browser instance
+        
+    Returns:
+        Dict: Parsed data structure
+    """
+    # Read the HTML file
+    with open(html_path, "r") as f:
+        html_content = f.read()
+    
+    # Create a new page to evaluate JavaScript on
+    page = await browser.new_page()
+    
+    # Set the content of the page to the saved HTML
+    await page.set_content(html_content)
+    
+    # Extract owner information using JavaScript
+    owners = await page.evaluate("""
+    () => {
+        const owners = [];
+        
+        // Find all elements containing PESEL numbers
+        const elements = Array.from(document.querySelectorAll('td'));
+        const ownerElements = elements.filter(el => 
+            el.textContent.match(/\\d{11}/) && 
+            el.textContent.includes('CZŁONKOWSK')
+        );
+        
+        for (const el of ownerElements) {
+            owners.push({
+                "Osoba fizyczna (Imię pierwsze nazwisko, imię ojca, imię matki, PESEL)": el.textContent.trim()
+            });
+        }
+        
+        return owners;
+    }
+    """)
+    
+    if owners and isinstance(owners, list):
+        for i, owner in enumerate(owners):
+            owner["Lista wskazań udziałów w prawie (numer udziału w prawie/ wielkość udziału/rodzaj wspólności)"] = str(i + 1)
+    # Close the page
+    await page.close()
+    
+    # Return the content structure
+    return {"title": "DZIAŁ II - WŁASNOŚĆ", "tables": owners}
