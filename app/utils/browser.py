@@ -1,8 +1,8 @@
 """
 Browser management utilities for EKW Scraper.
 """
-from typing import Dict, Optional, Any
 import asyncio
+from typing import Dict, Optional, Any
 from playwright.async_api import async_playwright, Browser, Page, Playwright
 
 from app.config import settings
@@ -19,7 +19,7 @@ async def initialize_browser() -> tuple[Playwright, Browser, Page]:
     # Launch a browser directly
     browser = await playwright.chromium.launch(
         headless=True,  # Set to False for debugging
-        slow_mo=50  # Slow down operations by 50ms for stability
+        slow_mo=100  # Slow down operations by 100ms for stability
     )
     
     # Create a new browser context with specific options
@@ -30,6 +30,10 @@ async def initialize_browser() -> tuple[Playwright, Browser, Page]:
     
     # Create a new page
     page = await context.new_page()
+    
+    # Set longer timeouts for navigation and actions
+    page.set_default_navigation_timeout(60000)  # 60 seconds
+    page.set_default_timeout(60000)  # 60 seconds
     
     return playwright, browser, page
 
@@ -65,16 +69,44 @@ async def fill_input(page: Page, selector: str, value: str) -> None:
     """
     await page.fill(selector, value)
 
-async def click_element(page: Page, selector: str) -> None:
+async def click_element(page: Page, selector: str) -> bool:
     """
-    Click element and wait for network idle.
+    Click element and wait for network idle with retry mechanism.
     
     Args:
         page: Page instance
         selector: CSS selector for element to click
+        
+    Returns:
+        bool: True if successful, False otherwise
     """
-    await page.click(selector)
-    await page.wait_for_load_state("networkidle")
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            # First ensure element is visible
+            await page.wait_for_selector(selector, state="visible", timeout=10000)
+            
+            # Wait a moment for stability
+            await asyncio.sleep(0.5)
+            
+            # Try to click with a promise that resolves when navigation is complete
+            await page.click(selector)
+            
+            # Wait for network to be idle
+            await page.wait_for_load_state("networkidle", timeout=20000)
+            
+            return True
+        except Exception as e:
+            retry_count += 1
+            if retry_count >= max_retries:
+                return False
+            
+            # Wait before retrying
+            await asyncio.sleep(1)
+    
+    return False
 
 async def wait_for_element(page: Page, selector: str, timeout: int = 30000) -> None:
     """

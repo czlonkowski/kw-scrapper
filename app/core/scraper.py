@@ -4,7 +4,7 @@ Core scraping functionality for EKW portal.
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Tuple
-from playwright.async_api import Page
+from playwright.async_api import Page, Browser
 
 from app.config import settings
 from app.utils.browser import (
@@ -29,6 +29,8 @@ from app.models.response import (
     DzialIII,
     DzialIV
 )
+from bs4 import BeautifulSoup
+import re
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -58,8 +60,16 @@ async def scrape_ekw(request: KWRequest, clean_html: bool = True) -> ScraperResp
         page.set_default_timeout(15000)  # 15 seconds timeout
         
         # Navigate to EKW portal
-        await navigate_to_url(page, settings.ekw_portal_url)
-        logger.info(f"Navigated to EKW portal: {settings.ekw_portal_url}")
+        try:
+            await navigate_to_url(page, settings.ekw_portal_url)
+            logger.info(f"Navigated to EKW portal: {settings.ekw_portal_url}")
+        except Exception as e:
+            logger.error(f"Error navigating to EKW portal: {str(e)}")
+            return ScraperResponse(
+                success=False,
+                error=f"Error navigating to EKW portal: {str(e)}",
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+            )
         
         # Accept cookies if present (with shorter timeout)
         try:
@@ -69,15 +79,33 @@ async def scrape_ekw(request: KWRequest, clean_html: bool = True) -> ScraperResp
             logger.warning(f"Cookie acceptance failed, but continuing: {str(e)}")
         
         # Take a screenshot for debugging
-        await page.screenshot(path="debug_initial_page.png")
-        logger.info("Saved initial page screenshot for debugging")
+        try:
+            await page.screenshot(path="debug_initial_page.png")
+            logger.info("Saved initial page screenshot for debugging")
+        except Exception as e:
+            logger.warning(f"Failed to save initial page screenshot: {str(e)}")
         
         # Fill in the KW number fields
-        await fill_kw_form(page, request)
-        logger.info(f"Filled KW form with: {request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}")
+        try:
+            await fill_kw_form(page, request)
+            logger.info(f"Filled KW form with: {request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}")
+        except Exception as e:
+            logger.error(f"Error filling KW form: {str(e)}")
+            return ScraperResponse(
+                success=False,
+                error=f"Error filling KW form: {str(e)}",
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+            )
         
         # Click search button
-        await click_element(page, "#wyszukaj")
+        search_success = await click_element(page, "#wyszukaj")
+        if not search_success:
+            logger.error("Failed to click search button")
+            return ScraperResponse(
+                success=False,
+                error="Failed to click search button",
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+            )
         logger.info("Clicked search button")
         
         # Wait for results page with reduced timeout
@@ -111,16 +139,34 @@ async def scrape_ekw(request: KWRequest, clean_html: bool = True) -> ScraperResp
                 )
         
         # Click on "Przeglądanie aktualnej treści KW" button
-        await click_element(page, "#przyciskWydrukZwykly")
+        view_success = await click_element(page, "#przyciskWydrukZwykly")
+        if not view_success:
+            logger.error("Failed to click on 'Przeglądanie aktualnej treści KW' button")
+            return ScraperResponse(
+                success=False,
+                error="Failed to click on 'Przeglądanie aktualnej treści KW' button",
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+            )
         logger.info("Clicked on 'Przeglądanie aktualnej treści KW' button")
         
         # Process each section
-        sections_data = await process_all_sections(page)
+        try:
+            sections_data = await process_all_sections(page)
+        except Exception as e:
+            logger.error(f"Error processing sections: {str(e)}")
+            return ScraperResponse(
+                success=False,
+                error=f"Error processing sections: {str(e)}",
+                kw_number=f"{request.kod_wydzialu}/{request.numer_ksiegi_wieczystej}/{request.cyfra_kontrolna}"
+            )
         
         # Clean HTML if requested
         if clean_html:
-            sections_data = clean_scraped_data(sections_data)
-            logger.info("Cleaned HTML from scraped data")
+            try:
+                sections_data = clean_scraped_data(sections_data)
+                logger.info("Cleaned HTML from scraped data")
+            except Exception as e:
+                logger.warning(f"Failed to clean HTML: {str(e)}")
         
         # Create response object
         response = ScraperResponse(
@@ -218,22 +264,9 @@ async def process_all_sections(page: Page) -> Dict[str, Any]:
     
     for section_name, section_info in sections.items():
         try:
-            # Click on section button
-            await click_element(page, section_info["selector"])
-            logger.info(f"Clicked on {section_name} button")
-            
-            # Wait for section content to load with shorter timeout
-            await page.wait_for_load_state("networkidle", timeout=10000)
-            
-            # Extract HTML content
-            html_content = await extract_html_content(page, "body")
-            
-            # Parse section data
-            section_data = await section_info["parser"](page, html_content)
-            result[section_name] = section_data
-            
-            logger.info(f"Processed {section_name} successfully")
-            
+            section_data = await process_section(page, section_name, section_info["selector"])
+            if section_data is not None:
+                result[section_name] = section_data
         except Exception as e:
             logger.error(f"Error processing {section_name}: {str(e)}")
             # Create empty section data with error
@@ -244,6 +277,50 @@ async def process_all_sections(page: Page) -> Dict[str, Any]:
             )
     
     return result
+
+
+async def process_section(page: Page, section_name: str, section_selector: str) -> Dict[str, Any]:
+    """
+    Process a specific section of the KW document.
+    
+    Args:
+        page: Playwright page object
+        section_name: Name of the section (e.g., 'dzial_ii')
+        section_selector: CSS selector for the section button
+        
+    Returns:
+        Dict: Parsed section data
+    """
+    try:
+        # Click on section button
+        click_success = await click_element(page, section_selector)
+        if not click_success:
+            logger.error(f"Failed to click on {section_name} button")
+            return None
+        
+        logger.info(f"Clicked on {section_name} button")
+        
+        # Wait for section content to load
+        await wait_for_element(page, "#contentDzialu")
+        
+        # Extract HTML content
+        html_content = await extract_html_content(page, "#contentDzialu")
+        
+        # Save HTML for debugging (especially for Dział II)
+        if section_name == "dzial_ii":
+            with open(f"files/live_{section_name}_debug.html", "w") as f:
+                f.write(html_content)
+        
+        # Parse section data
+        parse_function = globals()[f"parse_{section_name}"]
+        section_data = await parse_function(page, html_content)
+        
+        logger.info(f"Processed {section_name} successfully")
+        return section_data
+    
+    except Exception as e:
+        logger.error(f"Error processing {section_name}: {str(e)}")
+        return None
 
 
 async def parse_dzial_io(page: Page, html_content: str) -> DzialIO:
@@ -351,35 +428,110 @@ async def parse_dzial_ii(page: Page, html_content: str) -> DzialII:
     Returns:
         DzialII: Parsed data
     """
-    content = {}
+    content = {"title": "DZIAŁ II - WŁASNOŚĆ", "tables": []}
     
-    # Extract table data
-    tables = await page.query_selector_all("table.tabela-dane")
+    # Save raw HTML to a file for debugging
+    with open("files/dzial_ii_debug.html", "w") as f:
+        f.write(html_content)
     
-    if tables:
-        ownership_data = []
+    # Use BeautifulSoup for direct HTML parsing
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Find all owner rows by looking for cells containing PESEL numbers (11 digits)
+    pesel_pattern = re.compile(r'\d{11}')
+    owner_rows = []
+    
+    for td in soup.find_all('td'):
+        if pesel_pattern.search(str(td.text)) and 'CZŁONKOWSK' in td.text:
+            owner_row = td.parent
+            owner_rows.append(owner_row)
+    
+    # Process each owner row to extract owner information
+    for i, row in enumerate(owner_rows):
+        # Extract owner information
+        owner_info = row.find('td', text=lambda t: pesel_pattern.search(str(t)) and 'CZŁONKOWSK' in t)
         
-        for table in tables:
-            rows = await table.query_selector_all("tr")
-            headers = []
+        if owner_info:
+            owner_data = {
+                "Lista wskazań udziałów w prawie (numer udziału w prawie/ wielkość udziału/rodzaj wspólności)": str(i + 1),
+                "Osoba fizyczna (Imię pierwsze nazwisko, imię ojca, imię matki, PESEL)": owner_info.text.strip()
+            }
             
-            for i, row in enumerate(rows):
-                cells = await row.query_selector_all("td")
-                
-                if i == 0:  # Header row
-                    for cell in cells:
-                        headers.append(await cell.inner_text())
-                else:  # Data rows
-                    row_data = {}
-                    for j, cell in enumerate(cells):
-                        if j < len(headers):
-                            row_data[headers[j].strip()] = (await cell.inner_text()).strip()
-                    if row_data:
-                        ownership_data.append(row_data)
-        
-        content["ownership_data"] = ownership_data
+            # Try to find the Lp number in previous rows
+            lp_row = None
+            current_row = row
+            
+            # Look up to 5 rows back for Lp. X.
+            for _ in range(5):
+                if current_row.previous_sibling:
+                    current_row = current_row.previous_sibling
+                    if isinstance(current_row, Tag):
+                        lp_cell = current_row.find('td', text=re.compile(r'Lp\. \d+\.'))
+                        if lp_cell:
+                            lp_match = re.search(r'Lp\. (\d+)\.', lp_cell.text)
+                            if lp_match:
+                                owner_data["Lp. " + lp_match.group(1) + "."] = lp_match.group(1)
+                                break
+            
+            content["tables"].append(owner_data)
     
-    return DzialII(content=content, raw_html=html_content)
+    # If BeautifulSoup parsing failed, try a JavaScript approach
+    if not content["tables"]:
+        # Use a JavaScript approach to extract owners
+        owners = await page.evaluate("""
+        () => {
+            try {
+                const owners = [];
+                
+                // Find all elements containing PESEL numbers
+                const peselElements = Array.from(document.querySelectorAll('td'))
+                    .filter(td => td.textContent.match(/\\d{11}/) && 
+                                td.textContent.includes('CZŁONKOWSK'));
+                
+                for (let i = 0; i < peselElements.length; i++) {
+                    const peselElement = peselElements[i];
+                    const ownerData = {
+                        "Lista wskazań udziałów w prawie (numer udziału w prawie/ wielkość udziału/rodzaj wspólności)": String(i + 1),
+                        "Osoba fizyczna (Imię pierwsze nazwisko, imię ojca, imię matki, PESEL)": peselElement.textContent.trim()
+                    };
+                    
+                    // Try to find the Lp number
+                    let currentRow = peselElement.closest('tr');
+                    let previousRow = currentRow.previousElementSibling;
+                    
+                    while (previousRow) {
+                        const lpMatch = previousRow.textContent.match(/Lp\\. (\\d+)\\./);
+                        if (lpMatch) {
+                            ownerData["Lp. " + lpMatch[1] + "."] = lpMatch[1];
+                            break;
+                        }
+                        previousRow = previousRow.previousElementSibling;
+                    }
+                    
+                    owners.push(ownerData);
+                }
+                
+                return owners;
+            } catch (error) {
+                console.error("Error extracting owners:", error);
+                return [];
+            }
+        }
+        """)
+        
+        if owners and isinstance(owners, list):
+            content["tables"] = owners
+    
+    # Extract document basis information
+    basis_docs = await extract_document_basis(page)
+    if basis_docs:
+        content["document_basis"] = basis_docs
+    
+    # Save the raw HTML for debugging
+    with open("files/live_dzial_ii_debug.html", "w") as f:
+        f.write(html_content)
+    
+    return DzialII(content=content, raw_html=None)
 
 
 async def parse_dzial_iii(page: Page, html_content: str) -> DzialIII:
@@ -466,6 +618,58 @@ async def parse_dzial_iv(page: Page, html_content: str) -> DzialIV:
     return DzialIV(content=content, raw_html=html_content)
 
 
+async def extract_document_basis(page: Page) -> List[Dict[str, str]]:
+    """
+    Extract document basis information from a section.
+    
+    Args:
+        page: Playwright page object
+        
+    Returns:
+        List[Dict[str, str]]: Document basis information
+    """
+    basis_docs = []
+    
+    # Find the document basis section
+    basis_tables = await page.query_selector_all("table.tabelaOpisnaPodstawaWpisu")
+    
+    for table in basis_tables:
+        rows = await table.query_selector_all("tr")
+        if len(rows) < 2:
+            continue
+            
+        basis_number = None
+        document_description = None
+        journal_info = None
+        
+        for row in rows:
+            cells = await row.query_selector_all("td")
+            if len(cells) < 2:
+                continue
+                
+            header_cell = cells[0]
+            value_cell = cells[1]
+            
+            header_text = (await header_cell.inner_text()).strip()
+            value_text = (await value_cell.inner_text()).strip()
+            
+            if "Numer podstawy wpisu" in header_text:
+                basis_number = value_text
+            elif document_description is None and basis_number is not None:
+                document_description = value_text
+            elif journal_info is None and document_description is not None:
+                journal_info = value_text
+        
+        if basis_number:
+            basis_docs.append({
+                "basis_number": basis_number,
+                "document_description": document_description if document_description else "",
+                "journal_info": journal_info if journal_info else ""
+            })
+    
+    return basis_docs
+
+
 async def wait_for_element(page: Page, selector: str, timeout: int = 15000) -> bool:
     """
     Wait for an element to appear on the page.
@@ -484,3 +688,56 @@ async def wait_for_element(page: Page, selector: str, timeout: int = 15000) -> b
     except Exception as e:
         logger.warning(f"Timeout waiting for element {selector}: {str(e)}")
         return False
+
+
+async def debug_parse_dzial_ii(html_path: str, browser: Browser) -> Dict[str, Any]:
+    """
+    Debug function to test Dział II parsing with a saved HTML file
+    
+    Args:
+        html_path: Path to the saved HTML file
+        browser: Playwright browser instance
+        
+    Returns:
+        Dict: Parsed data structure
+    """
+    # Read the HTML file
+    with open(html_path, "r") as f:
+        html_content = f.read()
+    
+    # Create a new page to evaluate JavaScript on
+    page = await browser.new_page()
+    
+    # Set the content of the page to the saved HTML
+    await page.set_content(html_content)
+    
+    # Extract owner information using JavaScript
+    owners = await page.evaluate("""
+    () => {
+        const owners = [];
+        
+        // Find all elements containing PESEL numbers
+        const elements = Array.from(document.querySelectorAll('td'));
+        const ownerElements = elements.filter(el => 
+            el.textContent.match(/\\d{11}/) && 
+            el.textContent.includes('CZŁONKOWSK')
+        );
+        
+        for (const el of ownerElements) {
+            owners.push({
+                "Osoba fizyczna (Imię pierwsze nazwisko, imię ojca, imię matki, PESEL)": el.textContent.trim()
+            });
+        }
+        
+        return owners;
+    }
+    """)
+    
+    if owners and isinstance(owners, list):
+        for i, owner in enumerate(owners):
+            owner["Lista wskazań udziałów w prawie (numer udziału w prawie/ wielkość udziału/rodzaj wspólności)"] = str(i + 1)
+    # Close the page
+    await page.close()
+    
+    # Return the content structure
+    return {"title": "DZIAŁ II - WŁASNOŚĆ", "tables": owners}
