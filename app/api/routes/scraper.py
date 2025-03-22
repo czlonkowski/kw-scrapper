@@ -14,7 +14,8 @@ router = APIRouter(prefix="/api/scraper", tags=["scraper"])
 @router.post("/ekw", response_model=ScraperResponse)
 async def scrape_ekw_endpoint(
     request: KWRequest, 
-    clean_html: bool = Query(True, description="Whether to clean HTML from the response data")
+    clean_html: bool = Query(True, description="Whether to clean HTML from the response data"),
+    debug: bool = Query(False, description="Enable debug mode with screenshots (not recommended for production)")
 ) -> ScraperResponse:
     """
     Scrape EKW portal for the given KW number.
@@ -22,12 +23,13 @@ async def scrape_ekw_endpoint(
     Args:
         request: KW number details
         clean_html: Whether to clean HTML from the response data
+        debug: Enable debug mode with screenshots (not recommended for production)
         
     Returns:
         ScraperResponse: Scraped data or error information
     """
     try:
-        result = await scrape_ekw(request, clean_html=clean_html)
+        result = await scrape_ekw(request, clean_html=clean_html, save_screenshots=debug)
         return result
     except Exception as e:
         raise HTTPException(

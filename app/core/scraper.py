@@ -20,7 +20,7 @@ from app.utils.browser import (
     extract_html_content,
     accept_cookies
 )
-from app.utils.html_cleaner import clean_scraped_data, clean_html_content
+from app.utils.html_cleaner import clean_scraped_data, clean_html_content, parse_ekw_section
 from app.models.request import KWRequest
 from app.models.response import (
     ScraperResponse,
@@ -413,19 +413,31 @@ async def scrape_ekw(request: KWRequest, clean_html: bool = True, save_screensho
                 
                 # Clean HTML if requested
                 if clean_html and content:
-                    content = clean_html_content(content)
-                
-                # Create the appropriate department model instance
-                if dept_var == 'dzial_io':
-                    dzial_io = DzialIO(content={"title": "DZIAŁ I-O"}, raw_html=content)
-                elif dept_var == 'dzial_isp':
-                    dzial_isp = DzialISp(content={"title": "DZIAŁ I-SP"}, raw_html=content)
-                elif dept_var == 'dzial_ii':
-                    dzial_ii = DzialII(content={"title": "DZIAŁ II"}, raw_html=content)
-                elif dept_var == 'dzial_iii':
-                    dzial_iii = DzialIII(content={"title": "DZIAŁ III"}, raw_html=content)
-                elif dept_var == 'dzial_iv':
-                    dzial_iv = DzialIV(content={"title": "DZIAŁ IV"}, raw_html=content)
+                    cleaned_content = clean_html_content(content)
+                    
+                    # Create the appropriate department model instance with both raw and cleaned content
+                    if dept_var == 'dzial_io':
+                        dzial_io = DzialIO(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
+                    elif dept_var == 'dzial_isp':
+                        dzial_isp = DzialISp(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
+                    elif dept_var == 'dzial_ii':
+                        dzial_ii = DzialII(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
+                    elif dept_var == 'dzial_iii':
+                        dzial_iii = DzialIII(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
+                    elif dept_var == 'dzial_iv':
+                        dzial_iv = DzialIV(content=parse_ekw_section(cleaned_content), raw_html=content if not clean_html else None)
+                else:
+                    # If not cleaning, just store the raw HTML
+                    if dept_var == 'dzial_io':
+                        dzial_io = DzialIO(content={"title": "DZIAŁ I-O"}, raw_html=content)
+                    elif dept_var == 'dzial_isp':
+                        dzial_isp = DzialISp(content={"title": "DZIAŁ I-SP"}, raw_html=content)
+                    elif dept_var == 'dzial_ii':
+                        dzial_ii = DzialII(content={"title": "DZIAŁ II"}, raw_html=content)
+                    elif dept_var == 'dzial_iii':
+                        dzial_iii = DzialIII(content={"title": "DZIAŁ III"}, raw_html=content)
+                    elif dept_var == 'dzial_iv':
+                        dzial_iv = DzialIV(content={"title": "DZIAŁ IV"}, raw_html=content)
             else:
                 logger.error(f"Failed to click on {dept_var} button")
         
@@ -438,23 +450,26 @@ async def scrape_ekw(request: KWRequest, clean_html: bool = True, save_screensho
                 }""")
                 
                 if clean_html:
-                    full_content = clean_html_content(full_content)
-                
-                # Create proper model instances for each department
-                # For now, we'll use the same content for all departments
-                # Further processing can be done to separate the content
-                dzial_io = DzialIO(content={"title": "DZIAŁ I-O"}, raw_html=full_content)
-                dzial_isp = DzialISp(content={"title": "DZIAŁ I-SP"}, raw_html=full_content)
-                dzial_ii = DzialII(content={"title": "DZIAŁ II"}, raw_html=full_content)
-                dzial_iii = DzialIII(content={"title": "DZIAŁ III"}, raw_html=full_content)
-                dzial_iv = DzialIV(content={"title": "DZIAŁ IV"}, raw_html=full_content)
+                    cleaned_content = clean_html_content(full_content)
+                    
+                    # Create proper model instances for each department with parsed content
+                    dzial_io = DzialIO(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
+                    dzial_isp = DzialISp(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
+                    dzial_ii = DzialII(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
+                    dzial_iii = DzialIII(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
+                    dzial_iv = DzialIV(content=parse_ekw_section(cleaned_content), raw_html=full_content if not clean_html else None)
+                else:
+                    # If not cleaning, just store the raw HTML
+                    dzial_io = DzialIO(content={"title": "DZIAŁ I-O"}, raw_html=full_content)
+                    dzial_isp = DzialISp(content={"title": "DZIAŁ I-SP"}, raw_html=full_content)
+                    dzial_ii = DzialII(content={"title": "DZIAŁ II"}, raw_html=full_content)
+                    dzial_iii = DzialIII(content={"title": "DZIAŁ III"}, raw_html=full_content)
+                    dzial_iv = DzialIV(content={"title": "DZIAŁ IV"}, raw_html=full_content)
             except Exception as e:
                 logger.error(f"Error extracting full content: {str(e)}")
         
-        if clean_html:
-            logger.info("Cleaned HTML from scraped data")
-        
-        return ScraperResponse(
+        # Apply final cleaning to the response data if requested
+        response = ScraperResponse(
             success=True,
             error=None,
             kw_number=kw_number,
@@ -464,6 +479,13 @@ async def scrape_ekw(request: KWRequest, clean_html: bool = True, save_screensho
             dzial_iii=dzial_iii,
             dzial_iv=dzial_iv
         )
+        
+        # Apply final data cleaning if requested
+        if clean_html:
+            logger.info("Applying final data cleaning")
+            response = ScraperResponse(**clean_scraped_data(response))
+            
+        return response
     
     except Exception as e:
         logger.error(f"Error scraping EKW: {str(e)}")

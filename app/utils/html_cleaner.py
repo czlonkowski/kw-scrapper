@@ -305,12 +305,14 @@ def clean_scraped_data(data: Any) -> Dict[str, Any]:
     
     # Convert Pydantic model to dict if needed
     if isinstance(data, BaseModel):
-        data = data.dict()
+        data_dict = data.model_dump()
+    else:
+        data_dict = data
     
     result = {}
     
     # Clean each section
-    for key, value in data.items():
+    for key, value in data_dict.items():
         if key.startswith("dzial_") and value:
             result[key] = clean_section_data(value)
         else:
